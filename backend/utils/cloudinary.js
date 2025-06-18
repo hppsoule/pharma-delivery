@@ -1,98 +1,105 @@
-import { v2 as cloudinary } from 'cloudinary';
+import express from 'express';
 import multer from 'multer';
-import { CloudinaryStorage } from 'multer-storage-cloudinary';
+import streamifier from 'streamifier';
+import { v2 as cloudinary } from 'cloudinary';
 import dotenv from 'dotenv';
 
 dotenv.config();
+const router = express.Router();
 
-// Configuration Cloudinary
+// ✅ Configuration Cloudinary
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
   api_key: process.env.CLOUDINARY_API_KEY,
   api_secret: process.env.CLOUDINARY_API_SECRET,
 });
 
-// Configuration du stockage Cloudinary pour multer
-const storage = new CloudinaryStorage({
-  cloudinary: cloudinary,
-  params: {
-    folder: 'pharma-delivery',
-    allowed_formats: ['jpg', 'jpeg', 'png', 'gif', 'webp'],
-    transformation: [
-      { width: 800, height: 600, crop: 'limit' },
-      { quality: 'auto' },
-      { fetch_format: 'auto' }
-    ],
-  },
-});
-
-// Middleware multer pour l'upload
-export const upload = multer({
-  storage: storage,
-  limits: {
-    fileSize: 5 * 1024 * 1024, // 5MB
-  },
+// ✅ Multer en mémoire (pas de stockage disque)
+const storage = multer.memoryStorage();
+const upload = multer({
+  storage,
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB max
   fileFilter: (req, file, cb) => {
-    if (file.mimetype.startsWith('image/')) {
-      cb(null, true);
-    } else {
-      cb(new Error('Seules les images sont autorisées'), false);
-    }
-  },
+    if (file.mimetype.startsWith('image/')) cb(null, true);
+    else cb(new Error('Seules les images sont autorisées'), false);
+  }
 });
 
-// Fonction pour uploader une image depuis base64
-export const uploadBase64Image = async (base64String, folder = 'medicines') => {
+// ✅ Route : upload d’image via fichier (formData)
+router.post('/upload/image', upload.single('image'), async (req, res) => {
   try {
-    const result = await cloudinary.uploader.upload(base64String, {
-      folder: `pharma-delivery/${folder}`,
-      transformation: [
-        { width: 800, height: 600, crop: 'limit' },
-        { quality: 'auto' },
-        { fetch_format: 'auto' }
-      ],
+    const folder = req.body.folder || 'pharma-delivery';
+
+    const result = await new Promise((resolve, reject) => {
+      const stream = cloudinary.uploader.upload_stream(
+        {
+          folder,
+          transformation: [
+            { width: 800, height: 600, crop: 'limit' },
+            { quality: 'auto' },
+            { fetch_format: 'auto' }
+          ]
+        },
+        (error, result) => {
+          if (result) resolve(result);
+          else reject(error);
+        }
+      );
+      streamifier.createReadStream(req.file.buffer).pipe(stream);
     });
-    
-    return {
+
+    res.status(200).json({
       url: result.secure_url,
       publicId: result.public_id,
       width: result.width,
       height: result.height,
-    };
+    });
   } catch (error) {
-    console.error('Erreur upload Cloudinary:', error);
-    throw new Error('Erreur lors de l\'upload de l\'image');
+    console.error('❌ Erreur upload Cloudinary:', error);
+    res.status(500).json({ error: "Erreur lors de l’upload de l’image" });
   }
-};
+});
 
-// Fonction pour supprimer une image
-export const deleteImage = async (publicId) => {
+// ✅ Route : upload d’image en base64
+router.post('/upload/image/base64', async (req, res) => {
   try {
-    const result = await cloudinary.uploader.destroy(publicId);
-    return result;
+    const { imageData, folder = 'pharma-delivery' } = req.body;
+
+    if (!imageData) {
+      return res.status(400).json({ error: 'Image manquante (base64)' });
+    }
+
+    const result = await cloudinary.uploader.upload(imageData, {
+      folder,
+      transformation: [
+        { width: 800, height: 600, crop: 'limit' },
+        { quality: 'auto' },
+        { fetch_format: 'auto' }
+      ]
+    });
+
+    res.status(200).json({
+      url: result.secure_url,
+      publicId: result.public_id,
+      width: result.width,
+      height: result.height,
+    });
   } catch (error) {
-    console.error('Erreur suppression Cloudinary:', error);
-    throw new Error('Erreur lors de la suppression de l\'image');
+    console.error('❌ Erreur upload base64:', error);
+    res.status(500).json({ error: "Erreur lors de l’upload de l’image en base64" });
   }
-};
+});
 
-// Fonction pour générer des URLs avec transformations
-export const getOptimizedImageUrl = (publicId, options = {}) => {
-  const {
-    width = 400,
-    height = 300,
-    crop = 'fill',
-    quality = 'auto',
-    format = 'auto'
-  } = options;
+// ✅ Supprimer une image (publicId)
+router.delete('/upload/image/:publicId', async (req, res) => {
+  try {
+    const publicId = req.params.publicId;
+    const result = await cloudinary.uploader.destroy(publicId);
+    res.status(200).json({ result });
+  } catch (error) {
+    console.error('❌ Erreur suppression Cloudinary:', error);
+    res.status(500).json({ error: 'Erreur lors de la suppression de l’image' });
+  }
+});
 
-  return cloudinary.url(publicId, {
-    width,
-    height,
-    crop,
-    quality,
-    fetch_format: format,
-  });
-};
-
-export default cloudinary;
+export default router;
